@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "meshcap.fullname" . }}
+  labels:
+    {{- include "meshcap.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.collector.port }}
+      targetPort: ingest
+      protocol: TCP
+      name: ingest
+    - port: {{ .Values.collector.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "meshcap.selectorLabels" . | nindent 4 }}
