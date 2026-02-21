@@ -1,0 +1,90 @@
+version: 2
+
+project_name: meshcap
+
+before:
+  hooks:
+    - go mod tidy
+    - sh -c 'cd wasm && go mod tidy'
+
+builds:
+  - id: collector
+    main: ./cmd/collector/
+    binary: collector
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+  - id: wasm-plugin
+    dir: wasm
+    main: .
+    binary: plugin
+    buildmode: c-shared
+    no_unique_dist_dir: true
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - wasip1
+    goarch:
+      - wasm
+    ldflags:
+      - -X main.version={{ .Version }}
+
+kos:
+  - id: collector
+    build: collector
+    repositories:
+      - ghcr.io/jycamier/meshcap
+    tags:
+      - "{{ .Version }}"
+      - latest
+    bare: true
+    preserve_import_paths: false
+    base_image: cgr.dev/chainguard/static:latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    sbom: none
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: collector
+    builds:
+      - collector
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+  - id: wasm-plugin
+    builds:
+      - wasm-plugin
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-wasm-plugin_{{ .Version }}"
+    files:
+      - none*
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: jycamier
+    name: meshcap
+  draft: false
+  prerelease: auto
