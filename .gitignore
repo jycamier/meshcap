@@ -1,0 +1,4 @@
+bin/
+docs/
+gor-data/
+wasm/plugin.wasm

@@ -1,0 +1,21 @@
+{{- if and .Values.autoscaling.enabled (.Capabilities.APIVersions.Has "keda.sh/v1alpha1") }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "meshcap.fullname" . }}
+  labels:
+    {{- include "meshcap.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "meshcap.fullname" . }}
+  minReplicaCount: {{ .Values.autoscaling.minReplicas }}
+  maxReplicaCount: {{ .Values.autoscaling.maxReplicas }}
+  cooldownPeriod: {{ .Values.autoscaling.cooldownPeriod }}
+  pollingInterval: {{ .Values.autoscaling.pollingInterval }}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.autoscaling.prometheusAddress }}
+        query: avg(capture_buffer_size{namespace="{{ .Release.Namespace }}"})
+        threshold: {{ include "meshcap.bufferThreshold" . | quote }}
+{{- end }}
