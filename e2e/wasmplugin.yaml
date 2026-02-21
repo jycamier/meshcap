@@ -1,0 +1,15 @@
+apiVersion: extensions.istio.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: traffic-capture
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      capture.io/enabled: "true"
+  url: oci://kind-registry:5000/capture-wasm:e2e
+  imagePullPolicy: Always
+  phase: AUTHN
+  pluginConfig:
+    collectorCluster: "outbound|8080||collector-meshcap.capture.svc.cluster.local"
+    maxBodySize: 1048576

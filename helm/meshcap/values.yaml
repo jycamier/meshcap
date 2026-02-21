@@ -1,0 +1,53 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/jycamier/meshcap
+  tag: latest
+  pullPolicy: IfNotPresent
+
+collector:
+  port: 8080
+  s3Bucket: ""
+  s3Prefix: ""
+  s3Region: ""
+  s3Endpoint: ""
+  flushInterval: "5m"
+  bufferChanSize: 10000
+  maxBodySize: 1048576
+  metricsPort: 9200
+  logLevel: "info"
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+aws:
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  existingSecret: ""
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  bufferThresholdPercent: 70
+  cooldownPeriod: 300
+  pollingInterval: 30
+  prometheusAddress: "http://prometheus-server.monitoring.svc:9090"
+
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  labels: {}
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+imagePullSecrets: []
