@@ -5,7 +5,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build build-wasm test test-integration lint clean helm-lint helm-template
+.PHONY: build build-wasm build-caddy test test-meshcap test-caddy test-integration lint clean helm-lint helm-template
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/collector/
@@ -13,14 +13,27 @@ build:
 build-wasm:
 	cd wasm && GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -ldflags "-X main.version=$(VERSION)" -o plugin.wasm .
 
+build-caddy:
+	cd caddy && go build .
+
 test:
 	go test -race -cover ./...
+	cd pkg/meshcap && go test -race -cover ./...
+	cd caddy && go test -race -cover ./...
 
 test-integration:
 	go test -race -tags integration -cover ./...
 
+test-meshcap:
+	cd pkg/meshcap && go test -race -cover ./...
+
+test-caddy:
+	cd caddy && go test -race -cover ./...
+
 lint:
 	go vet ./...
+	cd pkg/meshcap && go vet ./...
+	cd caddy && go vet ./...
 
 clean:
 	rm -rf $(BUILD_DIR)
