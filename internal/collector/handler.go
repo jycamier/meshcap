@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jycamier/meshcap/internal/model"
+	"github.com/jycamier/meshcap/pkg/meshcap"
 )
 
 var tracer = otel.Tracer("meshcap/collector")
@@ -72,8 +73,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req model.HTTPRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	var cr meshcap.CapturedRequest
+	if err := json.Unmarshal(body, &cr); err != nil {
 		h.logger.Warn("failed to decode ingest payload", "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "invalid JSON")
@@ -86,8 +87,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	sc := trace.SpanContextFromContext(ctx)
 	if sc.HasTraceID() {
-		req.TraceID = sc.TraceID().String()
+		cr.TraceID = sc.TraceID().String()
 	}
+
+	req := model.FromCapturedRequest(cr)
 
 	span.SetAttributes(
 		attribute.String("request_id", req.RequestID),

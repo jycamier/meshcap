@@ -2,11 +2,9 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"strconv"
-	"strings"
-	"time"
 
+	"github.com/jycamier/meshcap/pkg/meshcap"
 	"github.com/proxy-wasm/proxy-wasm-go-sdk/proxywasm"
 	"github.com/proxy-wasm/proxy-wasm-go-sdk/proxywasm/types"
 )
@@ -60,23 +58,6 @@ func (p *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
 		contextID: contextID,
 		config:    &p.config,
 	}
-}
-
-// capturedRequest is the JSON payload sent to the collector.
-type capturedRequest struct {
-	RequestID   string `json:"request_id"`
-	TraceID     string `json:"trace_id"`
-	CapturedAt  string `json:"captured_at"`
-	TimestampNs int64  `json:"timestamp_ns"`
-	ReqMethod   string `json:"req_method"`
-	ReqPath     string `json:"req_path"`
-	ReqHost     string `json:"req_host"`
-	ReqVersion  string `json:"req_http_version"`
-	ReqHeaders  string `json:"req_headers"`
-	ReqBody     []byte `json:"req_body,omitempty"`
-	ReqBodySize int64  `json:"req_body_size"`
-	ClientIP    string `json:"client_ip"`
-	SourcePod   string `json:"source_pod"`
 }
 
 // httpContext handles a single HTTP request stream.
@@ -138,7 +119,7 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 	// Fallback: client IP from Envoy connection source address.
 	if ctx.clientIP == "" {
 		if addr, err := proxywasm.GetProperty([]string{"source", "address"}); err == nil && len(addr) > 0 {
-			ctx.clientIP = stripPort(string(addr))
+			ctx.clientIP = meshcap.StripPort(string(addr))
 		}
 	}
 
@@ -154,13 +135,7 @@ func (ctx *httpContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.
 	if err != nil {
 		proxywasm.LogWarnf("failed to get request body chunk: %v", err)
 	} else if len(chunk) > 0 {
-		remaining := ctx.config.MaxBodySize - len(ctx.bodyBuf)
-		if remaining > 0 {
-			if len(chunk) > remaining {
-				chunk = chunk[:remaining]
-			}
-			ctx.bodyBuf = append(ctx.bodyBuf, chunk...)
-		}
+		ctx.bodyBuf = meshcap.AppendBodyChunk(ctx.bodyBuf, chunk, ctx.config.MaxBodySize)
 	}
 
 	if endOfStream {
@@ -170,42 +145,21 @@ func (ctx *httpContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.
 	return types.ActionContinue
 }
 
-// stripPort removes the port suffix from an address like "10.0.0.1:1234".
-func stripPort(addr string) string {
-	for i := len(addr) - 1; i >= 0; i-- {
-		if addr[i] == ':' {
-			return addr[:i]
-		}
-	}
-	return addr
-}
-
 func (ctx *httpContext) dispatchToCollector(body []byte) {
-	now := time.Now().UTC()
-
-	// Extract trace_id from traceparent (format: version-trace_id-parent_id-trace_flags).
-	var traceID string
-	if parts := strings.SplitN(ctx.traceparent, "-", 4); len(parts) >= 2 {
-		traceID = parts[1]
-	}
-
-	req := capturedRequest{
-		RequestID:   ctx.requestID,
-		TraceID:     traceID,
-		CapturedAt:  now.Format(time.RFC3339Nano),
-		TimestampNs: now.UnixNano(),
-		ReqMethod:   ctx.method,
-		ReqPath:     ctx.path,
-		ReqHost:     ctx.host,
-		ReqVersion:  "HTTP/1.1",
-		ReqHeaders:  marshalHeaders(ctx.headers),
-		ReqBody:     body,
-		ReqBodySize: int64(len(body)),
+	req := meshcap.NewCapturedRequest(meshcap.RequestParams{
+		Method:      ctx.method,
+		Path:        ctx.path,
+		Host:        ctx.host,
+		HTTPVersion: "HTTP/1.1",
+		Headers:     ctx.headers,
+		Body:        body,
 		ClientIP:    ctx.clientIP,
 		SourcePod:   ctx.sourcePod,
-	}
+		RequestID:   ctx.requestID,
+		Traceparent: ctx.traceparent,
+	})
 
-	payload, err := json.Marshal(req)
+	payload, err := meshcap.Marshal(req)
 	if err != nil {
 		proxywasm.LogErrorf("failed to marshal captured request: %v", err)
 		return
@@ -248,12 +202,3 @@ func (ctx *httpContext) dispatchToCollector(body []byte) {
 		proxywasm.LogErrorf("failed to dispatch to collector: %v", err)
 	}
 }
-
-func marshalHeaders(h map[string]string) string {
-	data, err := json.Marshal(h)
-	if err != nil {
-		return fmt.Sprintf("{\"error\": %q}", err.Error())
-	}
-	return string(data)
-}
-

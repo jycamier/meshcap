@@ -1,5 +1,7 @@
 package model
 
+import "github.com/jycamier/meshcap/pkg/meshcap"
+
 type HTTPRequest struct {
 	RequestID   string `parquet:"request_id,zstd" json:"request_id"`
 	TraceID     string `parquet:"trace_id,zstd" json:"trace_id"`
@@ -14,4 +16,23 @@ type HTTPRequest struct {
 	ReqBodySize int64  `parquet:"req_body_size" json:"req_body_size"`
 	ClientIP    string `parquet:"client_ip,zstd" json:"client_ip"`
 	SourcePod   string `parquet:"source_pod,zstd" json:"source_pod"`
+}
+
+// FromCapturedRequest converts a meshcap.CapturedRequest to the internal HTTPRequest with parquet tags.
+func FromCapturedRequest(cr meshcap.CapturedRequest) HTTPRequest {
+	return HTTPRequest{
+		RequestID:   cr.RequestID,
+		TraceID:     cr.TraceID,
+		CapturedAt:  cr.CapturedAt,
+		TimestampNs: cr.TimestampNs,
+		ReqMethod:   cr.ReqMethod,
+		ReqPath:     cr.ReqPath,
+		ReqHost:     cr.ReqHost,
+		ReqVersion:  cr.ReqVersion,
+		ReqHeaders:  cr.ReqHeaders,
+		ReqBody:     cr.ReqBody,
+		ReqBodySize: cr.ReqBodySize,
+		ClientIP:    cr.ClientIP,
+		SourcePod:   cr.SourcePod,
+	}
 }
