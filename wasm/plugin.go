@@ -75,6 +75,7 @@ type httpContext struct {
 	requestID   string
 	traceparent string
 	tracestate  string
+	httpVersion string
 	bodyBuf     []byte
 }
 
@@ -116,6 +117,12 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 		}
 	}
 
+	// Read HTTP protocol version from Envoy (e.g. "HTTP/1.1", "HTTP/2").
+	ctx.httpVersion = "HTTP/1.1"
+	if proto, err := proxywasm.GetProperty([]string{"request", "protocol"}); err == nil && len(proto) > 0 {
+		ctx.httpVersion = string(proto)
+	}
+
 	// Fallback: client IP from Envoy connection source address.
 	if ctx.clientIP == "" {
 		if addr, err := proxywasm.GetProperty([]string{"source", "address"}); err == nil && len(addr) > 0 {
@@ -150,7 +157,7 @@ func (ctx *httpContext) dispatchToCollector(body []byte) {
 		Method:      ctx.method,
 		Path:        ctx.path,
 		Host:        ctx.host,
-		HTTPVersion: "HTTP/1.1",
+		HTTPVersion: ctx.httpVersion,
 		Headers:     ctx.headers,
 		Body:        body,
 		ClientIP:    ctx.clientIP,
