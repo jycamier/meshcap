@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"strconv"
+	"strings"
 
 	"github.com/jycamier/meshcap/pkg/meshcap"
 	"github.com/proxy-wasm/proxy-wasm-go-sdk/proxywasm"
@@ -21,6 +21,7 @@ type pluginConfig struct {
 type pluginContext struct {
 	types.DefaultPluginContext
 	config pluginConfig
+	engine *meshcap.Engine
 }
 
 func (p *pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPluginStartStatus {
@@ -30,23 +31,59 @@ func (p *pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPlugi
 			CollectorCluster: "outbound|8080||collector.capture.svc.cluster.local",
 			MaxBodySize:      1048576,
 		}
-		return types.OnPluginStartStatusOK
+	} else {
+		data, err := proxywasm.GetPluginConfiguration()
+		if err != nil {
+			proxywasm.LogCriticalf("failed to get plugin configuration: %v", err)
+			return types.OnPluginStartStatusFailed
+		}
+		if err := json.Unmarshal(data, &p.config); err != nil {
+			proxywasm.LogCriticalf("failed to parse plugin configuration: %v", err)
+			return types.OnPluginStartStatusFailed
+		}
+		if p.config.MaxBodySize <= 0 {
+			p.config.MaxBodySize = 1048576
+		}
 	}
 
-	data, err := proxywasm.GetPluginConfiguration()
-	if err != nil {
-		proxywasm.LogCriticalf("failed to get plugin configuration: %v", err)
-		return types.OnPluginStartStatusFailed
-	}
+	cluster := p.config.CollectorCluster
 
-	if err := json.Unmarshal(data, &p.config); err != nil {
-		proxywasm.LogCriticalf("failed to parse plugin configuration: %v", err)
-		return types.OnPluginStartStatusFailed
-	}
-
-	if p.config.MaxBodySize <= 0 {
-		p.config.MaxBodySize = 1048576
-	}
+	p.engine = meshcap.NewEngine(meshcap.EngineConfig{
+		MaxBodySize: p.config.MaxBodySize,
+		Dispatch: func(req meshcap.DispatchRequest) error {
+			headers := [][2]string{
+				{":method", req.Method},
+				{":path", req.Path},
+				{":authority", "collector"},
+			}
+			for k, v := range req.Headers {
+				headers = append(headers, [2]string{strings.ToLower(k), v})
+			}
+			_, err := proxywasm.DispatchHttpCall(
+				cluster,
+				headers,
+				req.Payload,
+				nil,
+				uint32(p.engine.Timeout().Milliseconds()),
+				func(numHeaders, bodySize, numTrailers int) {
+					status, err := proxywasm.GetHttpCallResponseHeaders()
+					if err != nil {
+						proxywasm.LogWarnf("failed to get dispatch response headers: %v", err)
+						return
+					}
+					for _, h := range status {
+						if h[0] == ":status" && h[1] != "202" {
+							proxywasm.LogWarnf("collector returned status %s", h[1])
+						}
+					}
+				},
+			)
+			return err
+		},
+		OnError: func(err error) {
+			proxywasm.LogErrorf("capture: %v", err)
+		},
+	})
 
 	proxywasm.LogInfof("capture plugin started: version=%s cluster=%s maxBodySize=%d",
 		version, p.config.CollectorCluster, p.config.MaxBodySize)
@@ -57,6 +94,7 @@ func (p *pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
 	return &httpContext{
 		contextID: contextID,
 		config:    &p.config,
+		engine:    p.engine,
 	}
 }
 
@@ -65,6 +103,7 @@ type httpContext struct {
 	types.DefaultHttpContext
 	contextID uint32
 	config    *pluginConfig
+	engine    *meshcap.Engine
 
 	method      string
 	path        string
@@ -142,7 +181,7 @@ func (ctx *httpContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.
 	if err != nil {
 		proxywasm.LogWarnf("failed to get request body chunk: %v", err)
 	} else if len(chunk) > 0 {
-		ctx.bodyBuf = meshcap.AppendBodyChunk(ctx.bodyBuf, chunk, ctx.config.MaxBodySize)
+		ctx.bodyBuf = meshcap.AppendBodyChunk(ctx.bodyBuf, chunk, ctx.engine.MaxBodySize())
 	}
 
 	if endOfStream {
@@ -153,7 +192,7 @@ func (ctx *httpContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.
 }
 
 func (ctx *httpContext) dispatchToCollector(body []byte) {
-	req := meshcap.NewCapturedRequest(meshcap.RequestParams{
+	ctx.engine.Capture(meshcap.RequestParams{
 		Method:      ctx.method,
 		Path:        ctx.path,
 		Host:        ctx.host,
@@ -164,48 +203,6 @@ func (ctx *httpContext) dispatchToCollector(body []byte) {
 		SourcePod:   ctx.sourcePod,
 		RequestID:   ctx.requestID,
 		Traceparent: ctx.traceparent,
+		Tracestate:  ctx.tracestate,
 	})
-
-	payload, err := meshcap.Marshal(req)
-	if err != nil {
-		proxywasm.LogErrorf("failed to marshal captured request: %v", err)
-		return
-	}
-
-	dispatchHeaders := [][2]string{
-		{":method", "POST"},
-		{":path", "/ingest"},
-		{":authority", "collector"},
-		{"content-type", "application/json"},
-		{"content-length", strconv.Itoa(len(payload))},
-	}
-	if ctx.traceparent != "" {
-		dispatchHeaders = append(dispatchHeaders, [2]string{"traceparent", ctx.traceparent})
-	}
-	if ctx.tracestate != "" {
-		dispatchHeaders = append(dispatchHeaders, [2]string{"tracestate", ctx.tracestate})
-	}
-
-	_, err = proxywasm.DispatchHttpCall(
-		ctx.config.CollectorCluster,
-		dispatchHeaders,
-		payload,
-		nil,
-		5000,
-		func(numHeaders, bodySize, numTrailers int) {
-			status, err := proxywasm.GetHttpCallResponseHeaders()
-			if err != nil {
-				proxywasm.LogWarnf("failed to get dispatch response headers: %v", err)
-				return
-			}
-			for _, h := range status {
-				if h[0] == ":status" && h[1] != "202" {
-					proxywasm.LogWarnf("collector returned status %s for request %s", h[1], ctx.requestID)
-				}
-			}
-		},
-	)
-	if err != nil {
-		proxywasm.LogErrorf("failed to dispatch to collector: %v", err)
-	}
 }

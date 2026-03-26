@@ -36,6 +36,7 @@ type RequestParams struct {
 	SourcePod   string
 	RequestID   string
 	Traceparent string
+	Tracestate  string
 }
 
 // NewCapturedRequest builds a CapturedRequest from raw parameters.

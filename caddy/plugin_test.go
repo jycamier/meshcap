@@ -14,8 +14,21 @@ import (
 	"go.uber.org/zap"
 )
 
+func newTestMiddleware(t *testing.T, collectorURL string) *Middleware {
+	t.Helper()
+	m := &Middleware{
+		CollectorURL: collectorURL,
+		MaxBodySize:  1048576,
+		logger:       zap.NewNop(),
+		engine: meshcap.NewEngine(meshcap.EngineConfig{
+			MaxBodySize:  1048576,
+			CollectorURL: collectorURL,
+		}),
+	}
+	return m
+}
+
 func TestServeHTTP(t *testing.T) {
-	// Set up a fake collector that records received payloads.
 	received := make(chan []byte, 1)
 	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -24,14 +37,8 @@ func TestServeHTTP(t *testing.T) {
 	}))
 	defer collector.Close()
 
-	m := &Middleware{
-		CollectorURL: collector.URL,
-		MaxBodySize:  1048576,
-		logger:       zap.NewNop(),
-		client:       &http.Client{Timeout: 5 * time.Second},
-	}
+	m := newTestMiddleware(t, collector.URL)
 
-	// Downstream handler that verifies the body is still readable.
 	nextCalled := false
 	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		nextCalled = true
@@ -60,7 +67,6 @@ func TestServeHTTP(t *testing.T) {
 		t.Error("next handler was not called")
 	}
 
-	// Wait for the async dispatch.
 	select {
 	case payload := <-received:
 		var cr meshcap.CapturedRequest
@@ -93,12 +99,7 @@ func TestServeHTTPNoBody(t *testing.T) {
 	}))
 	defer collector.Close()
 
-	m := &Middleware{
-		CollectorURL: collector.URL,
-		MaxBodySize:  1048576,
-		logger:       zap.NewNop(),
-		client:       &http.Client{Timeout: 5 * time.Second},
-	}
+	m := newTestMiddleware(t, collector.URL)
 
 	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.WriteHeader(http.StatusOK)

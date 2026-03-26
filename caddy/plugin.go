@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -30,7 +29,7 @@ type Middleware struct {
 	MaxBodySize int `json:"max_body_size,omitempty"`
 
 	logger *zap.Logger
-	client *http.Client
+	engine *meshcap.Engine
 }
 
 var (
@@ -51,10 +50,13 @@ func (Middleware) CaddyModule() caddy.ModuleInfo {
 // Provision implements caddy.Provisioner.
 func (m *Middleware) Provision(ctx caddy.Context) error {
 	m.logger = ctx.Logger()
-	if m.MaxBodySize <= 0 {
-		m.MaxBodySize = 1048576
-	}
-	m.client = &http.Client{Timeout: 5 * time.Second}
+	m.engine = meshcap.NewEngine(meshcap.EngineConfig{
+		MaxBodySize:  m.MaxBodySize,
+		CollectorURL: m.CollectorURL,
+		OnError: func(err error) {
+			m.logger.Warn("capture failed", zap.Error(err))
+		},
+	})
 	return nil
 }
 
@@ -72,9 +74,9 @@ func (m Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddy
 	var body []byte
 	if r.Body != nil {
 		var buf bytes.Buffer
-		limited := io.LimitReader(r.Body, int64(m.MaxBodySize)+1)
+		limited := io.LimitReader(r.Body, int64(m.engine.MaxBodySize())+1)
 		if _, err := io.Copy(&buf, limited); err == nil {
-			body = meshcap.LimitBody(buf.Bytes(), m.MaxBodySize)
+			body = buf.Bytes()
 		}
 		// Restore the body so downstream handlers can read it.
 		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf.Bytes()), r.Body))
@@ -88,7 +90,7 @@ func (m Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddy
 		}
 	}
 
-	cr := meshcap.NewCapturedRequest(meshcap.RequestParams{
+	go m.engine.Capture(meshcap.RequestParams{
 		Method:      r.Method,
 		Path:        r.URL.RequestURI(),
 		Host:        r.Host,
@@ -98,37 +100,10 @@ func (m Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddy
 		ClientIP:    clientIP(r),
 		RequestID:   r.Header.Get("X-Request-Id"),
 		Traceparent: r.Header.Get("Traceparent"),
+		Tracestate:  r.Header.Get("Tracestate"),
 	})
 
-	payload, err := meshcap.Marshal(cr)
-	if err != nil {
-		m.logger.Warn("failed to marshal captured request", zap.Error(err))
-	} else {
-		go m.dispatch(payload)
-	}
-
 	return next.ServeHTTP(w, r)
-}
-
-func (m *Middleware) dispatch(payload []byte) {
-	req, err := http.NewRequest(http.MethodPost, m.CollectorURL, bytes.NewReader(payload))
-	if err != nil {
-		m.logger.Warn("failed to create dispatch request", zap.Error(err))
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Content-Length", strconv.Itoa(len(payload)))
-
-	resp, err := m.client.Do(req)
-	if err != nil {
-		m.logger.Warn("failed to dispatch to collector", zap.Error(err))
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusAccepted {
-		m.logger.Warn("collector returned unexpected status", zap.Int("status", resp.StatusCode))
-	}
 }
 
 func clientIP(r *http.Request) string {
@@ -170,4 +145,3 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 	err := m.UnmarshalCaddyfile(h.Dispenser)
 	return &m, err
 }
-
